@@ -16,8 +16,8 @@ parser.add_argument('--data_dir', type=str, default='/nfs/turbo/coe-hunseok/ming
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
-parser.add_argument('--train_seq', type=list, default=['00', '01', '02', '04', '06', '08', '09'], help='sequences for training')
-parser.add_argument('--val_seq', type=list, default=['05', '07', '10'], help='sequences for validation')
+parser.add_argument('--train_seq', type=list, default=['02', '05'], help='sequences for training')
+parser.add_argument('--val_seq', type=list, default=['01', '06'], help='sequences for validation')
 parser.add_argument('--seed', type=int, default=0, help='random seed')
 
 parser.add_argument('--img_w', type=int, default=512, help='image width')
@@ -88,12 +88,11 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
     penalties = []
     data_len = len(train_loader)
 
-    for i, (imgs, imus, gts, rot, weight) in enumerate(train_loader):
+    for i, (imgs, imus, gts) in enumerate(train_loader):
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
         gts = gts.cuda().float() 
-        weight = weight.cuda().float()
 
         optimizer.zero_grad()
                 
@@ -271,7 +270,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-

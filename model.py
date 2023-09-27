@@ -52,6 +52,8 @@ class EarlyFusionAttention(nn.Module):
     """
     Refer to: 'Wayformer: Motion Forecasting via Simple & Efficient Attention Networks'
     https://arxiv.org/pdf/2207.05844.pdf
+    For more general architecture refer to DeepMind's 'Perceiver: General Perception with Iterative Attention'.
+    https://arxiv.org/abs/2103.03206
     """
 
     def __init__(
@@ -115,6 +117,8 @@ class LateFusionAttention(nn.Module):
     """
     Refer to: 'Wayformer: Motion Forecasting via Simple & Efficient Attention Networks'
     https://arxiv.org/pdf/2207.05844.pdf
+    For more general architecture refer to DeepMind's 'Perceiver: General Perception with Iterative Attention'.
+    https://arxiv.org/abs/2103.03206
     """
 
     def __init__(self, opt, num_blocks: int = 1, num_heads: int = 2) -> None:
@@ -195,6 +199,8 @@ class HierarchicalFusionAttention(nn.Module):
     """
     Refer to: 'Wayformer: Motion Forecasting via Simple & Efficient Attention Networks'
     https://arxiv.org/pdf/2207.05844.pdf
+    For more general architecture refer to DeepMind's 'Perceiver: General Perception with Iterative Attention'.
+    https://arxiv.org/abs/2103.03206
     """
 
     def __init__(self, opt, num_blocks: int = 1, num_heads: int = 2) -> None:

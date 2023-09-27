@@ -126,7 +126,7 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
         mse_losses.append(pose_loss.item())
         # penalties.append(penalty.item())
 
-    return np.mean(mse_losses), np.mean(penalties)
+    return np.mean(mse_losses)
 
 
 def main():
@@ -235,11 +235,11 @@ def main():
         logger.info(message)
 
         model.train()
-        avg_pose_loss, avg_penalty_loss = train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5)
+        avg_pose_loss = train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5)
         
         # Save the model after training
         torch.save(model.module.state_dict(), f'{checkpoints_dir}/{ep:003}.pth')
-        message = f'Epoch {ep} training finished, pose loss: {avg_pose_loss:.6f}, penalty_loss: {avg_penalty_loss:.6f}, model saved'
+        message = f'Epoch {ep} training finished, pose loss: {avg_pose_loss:.6f}, model saved'
         print(message)
         logger.info(message)
         

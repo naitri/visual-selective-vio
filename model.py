@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 EARLY_ATTN_FUSION = "early_fuse"
 LATE_ATTN_FUSION = "late_fuse"
-HIER_ATTN_FUSION = "heir_fuse"
+HIER_ATTN_FUSION = "hier_fuse"
 
 def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1, dropout=0):
     if batchNorm:

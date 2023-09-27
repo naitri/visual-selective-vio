@@ -35,6 +35,7 @@ class LearnedPositionEmbedding(nn.Module):
         super(LearnedPositionEmbedding, self).__init__()
         self.pos_embed = nn.parameter.Parameter(torch.Tensor(seq_len, embed_dim))
         torch.nn.init.kaiming_normal_(self.pos_embed)
+        self.pos_embed = self.pos_embed.cuda().float()
     
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -349,7 +350,7 @@ class Fusion_module(nn.Module):
             return feat_cat * mask[:, :, :, 0]
         else:
             # Any of the attention modules:
-            self.net(v, i)
+            return self.net(v, i)
 
 # The policy network module
 class PolicyNet(nn.Module):

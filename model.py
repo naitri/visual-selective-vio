@@ -6,6 +6,9 @@ import numpy as np
 from torch.distributions.utils import broadcast_all, probs_to_logits, logits_to_probs, lazy_property, clamp_probs
 import torch.nn.functional as F
 
+EARLY_ATTN_FUSION = "early_fuse"
+LATE_ATTN_FUSION = "late_fuse"
+HIER_ATTN_FUSION = "heir_fuse"
 
 def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1, dropout=0):
     if batchNorm:
@@ -21,6 +24,209 @@ def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1, dropout=0):
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(dropout)  # , inplace=True)
         )
+
+
+class LearnedPositionEmbedding(nn.Module):
+    
+    def __init__(self, seq_len: int, embed_dim: int) -> None:
+        """
+        Adds position embedding to the input vectors.
+        """
+        super(LearnedPositionEmbedding, self).__init__()
+        self.pos_embed = nn.parameter.Parameter(torch.Tensor(seq_len, embed_dim))
+        torch.nn.init.kaiming_normal_(self.pos_embed)
+    
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        assert input.ndim == 3, "Number of dimensions should be 3 [batch, seq_len, f_len]"
+        
+        # pos embedding shoud be broadcastable.
+        out = input + self.pos_embed  # (batch, seq_len, f_len)
+        return out
+
+
+
+
+# Attention-Fusion for the visual and imu features:
+class EarlyFusionAttention(nn.Module):
+    """
+    Refer to: 'Wayformer: Motion Forecasting via Simple & Efficient Attention Networks'
+    https://arxiv.org/pdf/2207.05844.pdf
+    """
+
+    def __init__(
+            self, 
+            opt, 
+            num_blocks: int = 1, 
+            num_heads: int = 2, 
+            pos_embed_req: bool = True
+        ) -> None:
+        """
+        This is more like cross-attention. 
+        Cross-attends features from different modalities.
+
+        Args:
+            - opt: config args required for training.
+            - num_blocks: number of attention blocks
+            - num_heads: number of attention head per block 
+        """
+        super(EarlyFusionAttention, self).__init__()
+        embed_dims = opt.v_f_len + opt.i_f_len
+        self.num_blocks = num_blocks
+
+        self.attn_blocks = []
+        for _ in range(self.num_blocks):
+            self.attn_blocks.append(
+                nn.MultiheadAttention(
+                    embed_dim=embed_dims,
+                    num_heads=num_heads,
+                    batch_first=True,
+                )
+            )
+        
+        self.pos_embed = None
+        if pos_embed_req:
+            self.pos_embed = LearnedPositionEmbedding(
+                seq_len=opt.seq_len,
+                embed_dim=embed_dims
+            )
+        
+
+    def forward(
+            self, 
+            v_features: torch.Tensor, 
+            i_features: torch.Tensor
+        ) -> torch.Tensor:
+        """
+        Concatenate the features and apply attention.
+        """
+        concat_vi = torch.cat((v_features, i_features), dim=-1)   # (batch, seq_len, v_len+i_len)
+        
+        x = self.pos_embed(concat_vi) if self.pos_embed else concat_vi  # (batch, seq_len, v_len+i_len)
+
+        for attn_block in self.attn_blocks:
+            x, _ = attn_block(query=x, key=x, value=x)
+        
+        return x  # (batch, seq_len, v_len+i_len)
+
+
+# Attention-Fusion for the visual and imu features:
+class LateFusionAttention(nn.Module):
+    """
+    Refer to: 'Wayformer: Motion Forecasting via Simple & Efficient Attention Networks'
+    https://arxiv.org/pdf/2207.05844.pdf
+    """
+
+    def __init__(self, opt, num_blocks: int = 1, num_heads: int = 2) -> None:
+        """
+        This is more like self-attention.
+        The features from each modality self-attend before fusing together.
+
+        Args:
+            - opt: config args required for training.
+            - num_blocks: number of attention blocks
+            - num_heads: number of attention head per block
+        """
+        super(LateFusionAttention, self).__init__()
+        v_embed_dims = opt.v_f_len
+        i_embed_dims = opt.i_f_len
+        self.num_blocks = num_blocks
+
+        self.v_pos_embed = LearnedPositionEmbedding(
+            seq_len=opt.seq_len,
+            embed_dim=v_embed_dims
+        )
+
+        self.i_pos_embed = LearnedPositionEmbedding(
+            seq_len=opt.seq_len,
+            embed_dim=i_embed_dims
+        )
+
+        self.v_attn_blocks = []
+        self.i_attn_blocks = []
+
+        # Same number of blocks for both visual and imu features
+        for _ in range(self.num_blocks):
+            self.v_attn_blocks.append(
+                nn.MultiheadAttention(
+                    embed_dim=v_embed_dims,
+                    num_heads=num_heads,
+                    batch_first=True,
+                )
+            )
+        
+        for _ in range(self.num_blocks):
+            self.i_attn_blocks.append(
+                nn.MultiheadAttention(
+                    embed_dim=i_embed_dims,
+                    num_heads=num_heads,
+                    batch_first=True,
+                )
+            )
+
+    def forward(
+            self, 
+            v_features: torch.Tensor, 
+            i_features: torch.Tensor, 
+            concat: bool = True
+        ) -> torch.Tensor:
+        """
+        Apply self-attention over each modality and then concatenate,
+          or simply return the transformed vectors.
+        """
+        v_features = self.v_pos_embed(v_features)  # (batch, seq_len, v_len)
+        i_features = self.i_pos_embed(i_features)  # (batch, seq_len, i_len)
+
+        for attn_block in self.v_attn_blocks:
+            v_features, _ = attn_block(query=v_features, key=v_features, value=v_features)  # (batch, seq_len, v_len)
+        
+        for attn_block in self.i_attn_blocks:
+            i_features, _ = attn_block(query=i_features, key=i_features, value=i_features)  # (batch, seq_len, i_len)
+        
+        if concat:
+            return torch.cat((v_features, i_features), dim=-1)  # (batch, seq_len, v_len+i_len)
+        else:
+            return (v_features, i_features)
+
+
+
+# Attention-Fusion for the visual and imu features:
+class HierarchicalFusionAttention(nn.Module):
+    """
+    Refer to: 'Wayformer: Motion Forecasting via Simple & Efficient Attention Networks'
+    https://arxiv.org/pdf/2207.05844.pdf
+    """
+
+    def __init__(self, opt, num_blocks: int = 1, num_heads: int = 2) -> None:
+        """
+        Interleaves/combines late and early fusion.
+        1. Apply self-attention over each modality and concatenate - LateFusion,
+        2. Apply attention for cross-modality features - EarlyFusion over the concatenated vector.
+
+        Args:
+            - opt: config args required for training.
+            - num_blocks: number of attention blocks
+            - num_heads: number of attention head per block
+        """
+        super(HierarchicalFusionAttention, self).__init__()
+        self.late_fusion = LateFusionAttention(opt)
+        self.cross_attn_fusion = EarlyFusionAttention(opt, pos_embed_req=False)
+
+    def forward(self, v_features, i_features):
+
+        v_features, i_features = self.late_fusion(
+            v_features, 
+            i_features, 
+            concat=False,
+        )  # (batch, seq_len, v_len), (batch, seq_len, i_len)
+        
+        out = self.cross_attn_fusion(v_features, i_features)
+
+        return out  
+
+
+        
+
 
 # The inertial encoder for raw imu data
 class Inertial_encoder(nn.Module):
@@ -108,7 +314,13 @@ class Fusion_module(nn.Module):
                 nn.Linear(self.f_len, self.f_len))
         elif self.fuse_method == 'hard':
             self.net = nn.Sequential(
-                nn.Linear(self.f_len, 2 * self.f_len))
+                nn.Linear(self.f_len, 2 * self.f_len))  
+        elif self.fuse_method == EARLY_ATTN_FUSION:
+            self.net = EarlyFusionAttention(opt)
+        elif self.fuse_method == LATE_ATTN_FUSION:
+            self.net = LateFusionAttention(opt)
+        elif self.fuse_method == HIER_ATTN_FUSION:
+            self.net = HierarchicalFusionAttention(opt)
 
     def forward(self, v, i):
         if self.fuse_method == 'cat':
@@ -123,6 +335,9 @@ class Fusion_module(nn.Module):
             weights = weights.view(v.shape[0], v.shape[1], self.f_len, 2)
             mask = F.gumbel_softmax(weights, tau=1, hard=True, dim=-1)
             return feat_cat * mask[:, :, :, 0]
+        else:
+            # Any of the attention modules:
+            self.net(v, i)
 
 # The policy network module
 class PolicyNet(nn.Module):
@@ -164,7 +379,7 @@ class Pose_RNN(nn.Module):
         self.regressor = nn.Sequential(
             nn.Linear(opt.rnn_hidden_size, 128),
             nn.LeakyReLU(0.1, inplace=True),
-            nn.Linear(128, 6))
+            nn.Linear(128, 12)) # we need the transformation matrix [3x4]
 
     def forward(self, fv, fv_alter, fi, dec, prev=None):
         if prev is not None:
@@ -205,36 +420,39 @@ class DeepVIO(nn.Module):
         fv_alter = torch.zeros_like(fv) # zero padding in the paper, can be replaced by other 
         
         for i in range(seq_len):
-            if i == 0 and is_first:
-                # The first relative pose is estimated by both images and imu by default
-                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
-            else:
-                if selection == 'gumbel-softmax':
-                    # Otherwise, sample the decision from the policy network
-                    p_in = torch.cat((fi[:, i, :], hidden), -1)
-                    logit, decision = self.Policy_net(p_in.detach(), temp)
-                    decision = decision.unsqueeze(1)
-                    logit = logit.unsqueeze(1)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
-                    decisions.append(decision)
-                    logits.append(logit)
-                elif selection == 'random':
-                    decision = (torch.rand(fv.shape[0], 1, 2) < p).float()
-                    decision[:,:,1] = 1-decision[:,:,0]
-                    decision = decision.to(fv.device)
-                    logit = 0.5*torch.ones((fv.shape[0], 1, 2)).to(fv.device)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
-                    decisions.append(decision)
-                    logits.append(logit)
+            pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
+
+            # Policy Network not required.
+            # if i == 0 and is_first:
+            #     # The first relative pose is estimated by both images and imu by default
+            #     pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
+            # else:
+            #     if selection == 'gumbel-softmax':
+            #         # Otherwise, sample the decision from the policy network
+            #         p_in = torch.cat((fi[:, i, :], hidden), -1)
+            #         logit, decision = self.Policy_net(p_in.detach(), temp)
+            #         decision = decision.unsqueeze(1)
+            #         logit = logit.unsqueeze(1)
+            #         pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
+            #         decisions.append(decision)
+            #         logits.append(logit)
+            #     elif selection == 'random':
+            #         decision = (torch.rand(fv.shape[0], 1, 2) < p).float()
+            #         decision[:,:,1] = 1-decision[:,:,0]
+            #         decision = decision.to(fv.device)
+            #         logit = 0.5*torch.ones((fv.shape[0], 1, 2)).to(fv.device)
+            #         pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
+            #         decisions.append(decision)
+            #         logits.append(logit)
             poses.append(pose)
             hidden = hc[0].contiguous()[:, -1, :]
 
         poses = torch.cat(poses, dim=1)
-        decisions = torch.cat(decisions, dim=1)
-        logits = torch.cat(logits, dim=1)
-        probs = torch.nn.functional.softmax(logits, dim=-1)
+        # decisions = torch.cat(decisions, dim=1)
+        # logits = torch.cat(logits, dim=1)
+        # probs = torch.nn.functional.softmax(logits, dim=-1)
 
-        return poses, decisions, probs, hc
+        return poses, hc
 
 
 def initialization(net):

@@ -5,7 +5,7 @@ import logging
 from path import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI
-from model import DeepVIO
+from model import DeepVIO, EARLY_ATTN_FUSION, LATE_ATTN_FUSION, HIER_ATTN_FUSION
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 import numpy as np
@@ -24,7 +24,7 @@ parser.add_argument('--img_w', type=int, default=512, help='image width')
 parser.add_argument('--img_h', type=int, default=256, help='image height')
 parser.add_argument('--v_f_len', type=int, default=512, help='visual feature length')
 parser.add_argument('--i_f_len', type=int, default=256, help='imu feature length')
-parser.add_argument('--fuse_method', type=str, default='cat', help='fusion method [cat, soft, hard]')
+parser.add_argument('--fuse_method', type=str, default=EARLY_ATTN_FUSION, help='fusion method [cat, soft, hard, early_fuse, late_fuse, heir_fuse]')
 parser.add_argument('--imu_dropout', type=float, default=0, help='dropout for the IMU encoder')
 
 parser.add_argument('--rnn_hidden_size', type=int, default=1024, help='size of the LSTM latent')
@@ -65,20 +65,21 @@ np.random.seed(args.seed)
 def update_status(ep, args, model):
     if ep < args.epochs_warmup:  # Warmup stage
         lr = args.lr_warmup
-        selection = 'random'
+        # selection = 'random'
         temp = args.temp_init
-        for param in model.module.Policy_net.parameters(): # Disable the policy network
-            param.requires_grad = False
+        # for param in model.module.Policy_net.parameters(): # Disable the policy network
+        #     param.requires_grad = False
     elif ep >= args.epochs_warmup and ep < args.epochs_warmup + args.epochs_joint: # Joint training stage
         lr = args.lr_joint
-        selection = 'gumbel-softmax'
+        # selection = 'gumbel-softmax'
         temp = args.temp_init * math.exp(-args.eta * (ep-args.epochs_warmup))
-        for param in model.module.Policy_net.parameters(): # Enable the policy network
-            param.requires_grad = True
+        # for param in model.module.Policy_net.parameters(): # Enable the policy network
+        #     param.requires_grad = True
     elif ep >= args.epochs_warmup + args.epochs_joint: # Finetuning stage
         lr = args.lr_fine
-        selection = 'gumbel-softmax'
+        # selection = 'gumbel-softmax'
         temp = args.temp_init * math.exp(-args.eta * (ep-args.epochs_warmup))
+    selection = None
     return lr, selection, temp
 
 def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, weighted=False):
@@ -96,30 +97,34 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
 
         optimizer.zero_grad()
                 
-        poses, decisions, probs, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
-            angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])
-            translation_loss = torch.nn.functional.mse_loss(poses[:,:,3:], gts[:, :, 3:])
+            # angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])
+            # translation_loss = torch.nn.functional.mse_loss(poses[:,:,3:], gts[:, :, 3:])
+            proj_mat_loss = torch.nn.functional.mse_loss(poses, gts)
         else:
             weight = weight/weight.sum()
-            angle_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,:3] - gts[:, :, :3]) ** 2).mean()
-            translation_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,3:] - gts[:, :, 3:]) ** 2).mean()
+            # angle_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,:3] - gts[:, :, :3]) ** 2).mean()
+            # translation_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,3:] - gts[:, :, 3:]) ** 2).mean()
+            proj_mat_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses - gts) ** 2).mean()
         
-        pose_loss = 100 * angle_loss + translation_loss        
-        penalty = (decisions[:,:,0].float()).sum(-1).mean()
-        loss = pose_loss + args.Lambda * penalty 
+        # pose_loss = 100 * angle_loss + translation_loss
+        pose_loss = proj_mat_loss        
+        # penalty = (decisions[:,:,0].float()).sum(-1).mean()
+        # loss = pose_loss + args.Lambda * penalty
+        loss = pose_loss 
         
         loss.backward()
         optimizer.step()
         
         if i % args.print_frequency == 0: 
-            message = f'Epoch: {ep}, iters: {i}/{data_len}, pose loss: {pose_loss.item():.6f}, penalty: {penalty.item():.6f}, loss: {loss.item():.6f}'
+            message = f'Epoch: {ep}, iters: {i}/{data_len}, pose loss: {pose_loss.item():.6f}, loss: {loss.item():.6f}'
             print(message)
             logger.info(message)
 
         mse_losses.append(pose_loss.item())
-        penalties.append(penalty.item())
+        # penalties.append(penalty.item())
 
     return np.mean(mse_losses), np.mean(penalties)
 

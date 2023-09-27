@@ -61,7 +61,7 @@ class EarlyFusionAttention(nn.Module):
             opt, 
             num_blocks: int = 1, 
             num_heads: int = 2, 
-            pos_embed_req: bool = True
+            pos_embed_req: bool = True,
         ) -> None:
         """
         This is more like cross-attention. 
@@ -97,7 +97,7 @@ class EarlyFusionAttention(nn.Module):
     def forward(
             self, 
             v_features: torch.Tensor, 
-            i_features: torch.Tensor
+            i_features: torch.Tensor,
         ) -> torch.Tensor:
         """
         Concatenate the features and apply attention.
@@ -121,7 +121,12 @@ class LateFusionAttention(nn.Module):
     https://arxiv.org/abs/2103.03206
     """
 
-    def __init__(self, opt, num_blocks: int = 1, num_heads: int = 2) -> None:
+    def __init__(
+            self, 
+            opt, 
+            num_blocks: int = 1, 
+            num_heads: int = 2,
+        ) -> None:
         """
         This is more like self-attention.
         The features from each modality self-attend before fusing together.
@@ -172,7 +177,7 @@ class LateFusionAttention(nn.Module):
             self, 
             v_features: torch.Tensor, 
             i_features: torch.Tensor, 
-            concat: bool = True
+            concat: bool = True,
         ) -> torch.Tensor:
         """
         Apply self-attention over each modality and then concatenate,
@@ -203,7 +208,7 @@ class HierarchicalFusionAttention(nn.Module):
     https://arxiv.org/abs/2103.03206
     """
 
-    def __init__(self, opt, num_blocks: int = 1, num_heads: int = 2) -> None:
+    def __init__(self, opt) -> None:
         """
         Interleaves/combines late and early fusion.
         1. Apply self-attention over each modality and concatenate - LateFusion,
@@ -211,14 +216,16 @@ class HierarchicalFusionAttention(nn.Module):
 
         Args:
             - opt: config args required for training.
-            - num_blocks: number of attention blocks
-            - num_heads: number of attention head per block
         """
         super(HierarchicalFusionAttention, self).__init__()
         self.late_fusion = LateFusionAttention(opt)
         self.cross_attn_fusion = EarlyFusionAttention(opt, pos_embed_req=False)
 
-    def forward(self, v_features, i_features):
+    def forward(
+            self, 
+            v_features: torch.Tensor, 
+            i_features: torch.Tensor,
+        ) -> torch.Tensor:
 
         v_features, i_features = self.late_fusion(
             v_features, 
@@ -227,8 +234,7 @@ class HierarchicalFusionAttention(nn.Module):
         )  # (batch, seq_len, v_len), (batch, seq_len, i_len)
         
         out = self.cross_attn_fusion(v_features, i_features)
-
-        return out  
+        return out  # (batch, seq_len, v_len+i_len)
 
 
         

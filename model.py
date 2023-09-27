@@ -76,14 +76,14 @@ class EarlyFusionAttention(nn.Module):
         embed_dims = opt.v_f_len + opt.i_f_len
         self.num_blocks = num_blocks
 
-        self.attn_blocks = []
+        self.attn_blocks = nn.ModuleList()
         for _ in range(self.num_blocks):
             self.attn_blocks.append(
                 nn.MultiheadAttention(
                     embed_dim=embed_dims,
                     num_heads=num_heads,
                     batch_first=True,
-                )
+                ).cuda()
             )
         
         self.pos_embed = None
@@ -91,7 +91,7 @@ class EarlyFusionAttention(nn.Module):
             self.pos_embed = LearnedPositionEmbedding(
                 seq_len=opt.seq_len,
                 embed_dim=embed_dims
-            )
+            ).cuda()
         
 
     def forward(
@@ -102,12 +102,17 @@ class EarlyFusionAttention(nn.Module):
         """
         Concatenate the features and apply attention.
         """
+        print(v_features.shape)
         concat_vi = torch.cat((v_features, i_features), dim=-1)   # (batch, seq_len, v_len+i_len)
+
         
         x = self.pos_embed(concat_vi) if self.pos_embed else concat_vi  # (batch, seq_len, v_len+i_len)
+        
 
         for attn_block in self.attn_blocks:
+
             x, _ = attn_block(query=x, key=x, value=x)
+
         
         return x  # (batch, seq_len, v_len+i_len)
 
@@ -349,7 +354,7 @@ class Fusion_module(nn.Module):
             return feat_cat * mask[:, :, :, 0]
         else:
             # Any of the attention modules:
-            self.net(v, i)
+            return self.net(v, i)
 
 # The policy network module
 class PolicyNet(nn.Module):
@@ -398,10 +403,11 @@ class Pose_RNN(nn.Module):
             prev = (prev[0].transpose(1, 0).contiguous(), prev[1].transpose(1, 0).contiguous())
         
         # Select between fv and fv_alter
-        v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
-        fused = self.fuse(v_in, fi)
+        v_in = fv
         
+        fused = self.fuse(v_in, fi)
         out, hc = self.rnn(fused) if prev is None else self.rnn(fused, prev)
+
         out = self.rnn_drop_out(out)
         pose = self.regressor(out)
 
@@ -422,6 +428,7 @@ class DeepVIO(nn.Module):
         initialization(self)
 
     def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
+
 
         fv, fi = self.Feature_net(img, imu)
         batch_size = fv.shape[0]

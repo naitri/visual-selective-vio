@@ -35,7 +35,6 @@ class LearnedPositionEmbedding(nn.Module):
         super(LearnedPositionEmbedding, self).__init__()
         self.pos_embed = nn.parameter.Parameter(torch.Tensor(seq_len, embed_dim))
         torch.nn.init.kaiming_normal_(self.pos_embed)
-        self.pos_embed = self.pos_embed.cuda().float()
     
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
